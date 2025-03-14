@@ -19,10 +19,50 @@ const int gpioPin_ = 0;
 const int SAMPLES = (durationMs_ * 1000) / 100;
 bool data_[SAMPLES];
 
+// Struktur global definieren
+struct Waremacode {
+  String command;
+  String device1;
+  String device2;
+  int count = 0;
+
+  void clear() {
+    command = "";
+    device1 = "";
+    device2 = "";
+    count = 0;
+  }
+
+  void print() const {
+    Serial.printf("Count: %d\n", count);
+    Serial.println("Command: " + command);
+    Serial.println("Device1: " + device1);
+    Serial.println("Device2: " + device2);
+  }
+};
+
+// Konstanten zur besseren Lesbarkeit
+const int SIGNAL_LOW = 1;
+const int SIGNAL_HIGH = 2;
+
 void readCode();
 void airScan();
 void reconnect();
 void sendMqttMessage(const String& jsonMessage);
+
+// Funktion zum Senden des MQTT-Nachricht
+void sendWaremaCode(const Waremacode &code) {
+  StaticJsonDocument<200> doc;
+  doc["command"] = code.command;
+  doc["device1"] = code.device1;
+  doc["device2"] = code.device2;
+  doc["count"] = code.count;
+
+  String jsonMessage;
+  serializeJson(doc, jsonMessage);
+
+  sendMqttMessage(jsonMessage); // Externe Funktion aufrufen
+}
 
 void setup() {
   Serial.begin(115200);
@@ -66,112 +106,74 @@ void airScan() {
   }
 }
 
+// Hauptfunktion zur Signalauswertung
 void readCode() {
-  struct Waremacode {
-    String command;
-    String device1;
-    String device2;
-    int count = 0;
-
-    void clear() {
-      command = "";
-      device1 = "";
-      device2 = "";
-      count = 0;
-    }
-
-    String key() const {
-      return command + device1 + device2;
-    }
-
-    void dump() const {
-      Serial.printf("Count: %d\n", count);
-      Serial.println("Code: " + command);
-      Serial.println(device1);
-      Serial.println(device2);
-    }
-  };
-
-  const int iLOW = 1;
-  const int iHIGH = 2;
-  int cntLow = 0, cntHigh = 0, lastCntLow = 0, lastCntHigh = 0;
-  bool previousData = false;
-  int startReading = 0;
-  String actualBinarycode;
-  Waremacode actualWaremacode;
-  int last = 0;
+  int lowPulseCount = 0, highPulseCount = 0;
+  int lastLowCount = 0, lastHighCount = 0;
+  bool previousState = false;
+  bool startReading = false;
+  String binaryCode;
+  Waremacode decodedCode;
+  int lastSignalType = 0;
 
   for (size_t i = 0; i < SAMPLES; i++) {
     bool isHigh = data_[i];
 
-    if ((isHigh && !previousData) || (!isHigh && previousData)) {
-      lastCntLow = cntLow;
-      lastCntHigh = cntHigh;
+    // Signalwechsel erkannt
+    if (isHigh != previousState) {
+      lastLowCount = lowPulseCount;
+      lastHighCount = highPulseCount;
 
-      if (last != iLOW) cntLow = 0;
-      if (last != iHIGH) cntHigh = 0;
+      if (lastSignalType != SIGNAL_LOW) lowPulseCount = 0;
+      if (lastSignalType != SIGNAL_HIGH) highPulseCount = 0;
 
-      if (lastCntLow > 50 && lastCntHigh > 30) {
-        if (last == iLOW) {
-          i++;
-          startReading = 1;
-          cntLow = 0;
-          cntHigh = 0;
-          lastCntLow = 0;
-          lastCntHigh = 0;
-          previousData = isHigh;
-          continue;
-        }
+      // Prüfen, ob ein neues Signal beginnt
+      if (lastLowCount > 50 && lastHighCount > 30 && lastSignalType == SIGNAL_LOW) {
+        i++; // Überspringen
+        startReading = true;
+        lowPulseCount = highPulseCount = 0;
+        lastLowCount = lastHighCount = 0;
+        previousState = isHigh;
+        continue;
       }
 
-      if (startReading == 1) {
-        if ((lastCntHigh + lastCntLow) >= 10) {
-          if (lastCntHigh > 25) {
-            if (actualBinarycode.length() == 15) {
-              actualWaremacode.clear();
-              actualWaremacode.command = actualBinarycode;
-              actualWaremacode.count = 1;
-            } else if (actualBinarycode.length() == 10) {
-              if (actualWaremacode.device1 == "") {
-                actualWaremacode.device1 = actualBinarycode;
+      // Daten auswerten, falls Signal aktiv
+      if (startReading) {
+        if ((lastHighCount + lastLowCount) >= 10) {
+          if (lastHighCount > 25) {
+            if (binaryCode.length() == 15) {
+              decodedCode.clear();
+              decodedCode.command = binaryCode;
+              decodedCode.count = 1;
+            } else if (binaryCode.length() == 10) {
+              if (decodedCode.device1.isEmpty()) {
+                decodedCode.device1 = binaryCode;
               } else {
-                actualWaremacode.device2 = actualBinarycode;
+                decodedCode.device2 = binaryCode;
                 Serial.println("Empfangenes Signal:");
-                actualWaremacode.dump();
-                
-                // JSON-Nachricht erstellen
-                StaticJsonDocument<200> doc;
-                doc["command"] = actualWaremacode.command;
-                doc["device1"] = actualWaremacode.device1;
-                doc["device2"] = actualWaremacode.device2;
-                doc["count"] = actualWaremacode.count;
+                decodedCode.print();
 
-                String jsonMessage;
-                serializeJson(doc, jsonMessage);
-
-                // Senden des JSON-Nachricht über MQTT
-                sendMqttMessage(jsonMessage);
+                // JSON senden
+                sendWaremaCode(decodedCode);
               }
             }
-            actualBinarycode = 'S';
+            binaryCode = 'S'; // Neues Signal starten
           }
-          actualBinarycode += data_[i + 1] ? '1' : '0';
-          cntLow = 0;
-          cntHigh = 0;
-          lastCntLow = 0;
-          lastCntHigh = 0;
+          binaryCode += data_[i + 1] ? '1' : '0';
+          lowPulseCount = highPulseCount = lastLowCount = lastHighCount = 0;
         }
       }
     }
 
+    // Pulszähler aktualisieren
     if (!isHigh) {
-      cntLow++;
-      last = iLOW;
+      lowPulseCount++;
+      lastSignalType = SIGNAL_LOW;
     } else {
-      cntHigh++;
-      last = iHIGH;
+      highPulseCount++;
+      lastSignalType = SIGNAL_HIGH;
     }
-    previousData = isHigh;
+    previousState = isHigh;
   }
 }
 
