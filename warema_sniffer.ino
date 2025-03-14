@@ -15,7 +15,7 @@ WiFiClient espClient;
 PubSubClient client{espClient};
 
 const int durationMs_{1000};
-const int gpioPin_{0};
+const int gpioPin_{14};
 const int SAMPLES{(durationMs_ * 1000) / 100};
 bool data_[SAMPLES]{};
 
