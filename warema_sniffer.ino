@@ -19,6 +19,12 @@ const int gpioPin_ = 0;
 const int SAMPLES = (durationMs_ * 1000) / 100;
 bool data_[SAMPLES];
 
+// Data pulse length (total length of a single 0/1 element), unit: us
+const int dataLength = 1780;
+
+// Sync time length (total length of a single s/S element), unit: us
+const int syncLength = 5000;
+
 // Struktur global definieren
 struct Waremacode {
   String command;
@@ -128,7 +134,7 @@ void readCode() {
       if (lastSignalType != SIGNAL_HIGH) highPulseCount = 0;
 
       // Prüfen, ob ein neues Signal beginnt
-      if (lastLowCount > 50 && lastHighCount > 30 && lastSignalType == SIGNAL_LOW) {
+      if (lastLowCount > (syncLength / 100) && lastHighCount > (dataLength / 100) && lastSignalType == SIGNAL_LOW) {
         i++; // Überspringen
         startReading = true;
         lowPulseCount = highPulseCount = 0;
@@ -139,8 +145,8 @@ void readCode() {
 
       // Daten auswerten, falls Signal aktiv
       if (startReading) {
-        if ((lastHighCount + lastLowCount) >= 10) {
-          if (lastHighCount > 25) {
+        if ((lastHighCount + lastLowCount) >= (dataLength / 100)) {
+          if (lastHighCount > (dataLength / 100)) {
             if (binaryCode.length() == 15) {
               decodedCode.clear();
               decodedCode.command = binaryCode;
